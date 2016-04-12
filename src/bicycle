@@ -1,0 +1,286 @@
+#!/usr/bin/python
+from __future__ import division
+from math import *
+import numpy as np
+import scipy as sp
+import sys
+import matplotlib.pyplot as plt
+
+from matplotlib import animation
+
+from modules.bicycleTemplate import *
+from modules.auxiliaryLib import *
+
+def dampingAngle(x):
+    """ Computes the correction angle to steer the front wheel angle towards
+    the target.
+    Returns: correction angle (heuristically determined)
+    """
+    return atan(x) / 6.
+
+def correctSteeringAngle(bike, bikes):
+    """ Checks whether the front wheel is aligned with the target
+    and steers if necessary
+    Returns: none
+    """
+    # Compute some preliminary vectors
+    frameVector = bike.frontWheelPosition - bike.position
+    frameToTargetVector = bike.target - bike.position
+    # Normalised vector from the current bicycle centre-of-mass position to its target
+    normalisedVectorFromFrameToTarget = normalisedDesiredDirection(frameToTargetVector, frameVector)
+    # External normalised vectors from external bicycle centre-of-mass positions to current bicycle centre-of-mass position
+    # weighted with a distance dependent factor (heuristically determined) 
+    externalFramesToFrameWeightedVectors = [5.*exp(-np.linalg.norm(bike.position-externalBike.position)/2.5) * normalisedDesiredDirection(bike.position, externalBike.position) for externalBike in bikes]
+    # Resulting vector
+    eFT = normalisedVectorFromFrameToTarget + sum(externalFramesToFrameWeightedVectors)
+    # Associated angle
+    eta = acos(np.dot(frameVector, eFT) / (np.linalg.norm(frameVector) * np.linalg.norm(eFT)))
+    determinant = frameVector[0] * eFT[1] - frameVector[1] * eFT[0]
+    # Adjust the sign of eta accordingly
+    if determinant < 0.:
+        eta = -eta
+    # Correct the steering angle
+    delta = bike.frontWheelAngle + dampingAngle(eta-bike.frontWheelAngle)
+    if -np.pi/4. < delta < np.pi/4.:
+            bike.updateFrontWheelAngle(delta)   
+    return
+
+def differentialEquationInVy(Cf, Cr, lf, lr, vx, vy, Iz, m, delta, theta):
+    """ Defines the differential equation in vy according to the Lateral Bicycle Model
+    Returns: vyDot
+    """
+    term1 = - (Cf * cos(delta) + Cr) * vy / (m * vx)
+    term2 = (Cr * lr - Cf * lf * cos(delta)) / (m * vx) - vx
+    term2 = term2 * theta
+    term3 = Cf * cos(delta) * delta / m
+    return term1 + term2 + term3
+
+def differentialEquationInInertialMomentum(Cf, Cr, lf, lr, vx, vy, Iz, delta, theta):
+    """ Defines the differential equation in theta according to the Lateral Bicycle Model
+    Returns: thetaDot
+    """
+    term1 = (Cr * lr - Cf * lf * cos(delta)) * vy / (Iz * vx) 
+    term2 = - (Cf * lf**2 * cos(delta) + Cr * lr**2) * theta / (Iz * vx)
+    term3 = lf * Cf * cos(delta) * delta / Iz
+    return term1 + term2 + term3
+
+def systemOfODEsForDynamics(bike):
+    """ Defines the system of ODEs for a single bicycle according to the inner frame 
+    and system of coordinates described in the Lateral Bicycle model
+    Returns: derivatives of the lateral coordinate y and orientation angle
+    """ 
+    vyDot = differentialEquationInVy(bike.frontWheelCorneringStiffness, bike.frontWheelCorneringStiffness, 
+                                    bike.frontWheelLength, bike.backWheelLength, 
+                                    bike.getVelocityX(), bike.getVelocityY(), bike.inertialMomentum, 
+                                    bike.mass, bike.frontWheelAngle, bike.theta)
+        
+    thetaDot = differentialEquationInInertialMomentum(bike.frontWheelCorneringStiffness, bike.backWheelCorneringStiffness, 
+                                                      bike.frontWheelLength, bike.backWheelLength, 
+                                                      bike.getVelocityX(), bike.getVelocityY(), bike.inertialMomentum, 
+                                                      bike.frontWheelAngle, bike.theta)
+    return vyDot, thetaDot
+
+def updateVelocityAndOrientation(bike, vyDot, timeStep):
+    """ Updates the velocity in the inner frame y coordinate and the orientation
+    of the bicycle frame (theta) with respect to the outer XY frame
+    Returns: vY, theta 
+    """
+    vy    = bike.getVelocityY() + vyDot * timeStep
+    theta = bike.theta + bike.thetaDot * timeStep
+    return vy, theta
+
+def rotateCoordinatesToTheExternalFrame(bike, timeStep):
+    """ Computes the coordinates of the centre-of-mass in the external XY frame
+    Returns: X, Y
+    """ 
+    phi = bike.phi + bike.phiDot * timeStep
+    bike.updateYaw(phi)
+        
+    xDot = bike.getVelocityX() * cos(bike.phi) - bike.getVelocityY() * sin(bike.phi)
+    yDot = bike.getVelocityX() * sin(bike.phi) + bike.getVelocityY() * cos(bike.phi)
+        
+    x = bike.getPositionX() + xDot * timeStep
+    y = bike.getPositionY() + yDot * timeStep
+    return x, y
+    
+def computeWheelPositions(bike):
+    """ Computes and update the front and back wheel positions (centres of the wheels) and the position of the front
+    and back of the front wheel
+    Returns: none
+    """
+    frontWheelX = bike.getPositionX() + bike.frontWheelLength * cos(bike.phi)
+    frontWheelY = bike.getPositionY() + bike.frontWheelLength * sin(bike.phi)
+    bike.updateFrontWheelPosition(np.array([frontWheelX, frontWheelY]))
+      
+    backWheelX = bike.getPositionX() - bike.backWheelLength * cos(bike.phi)
+    backWheelY = bike.getPositionY() - bike.backWheelLength * sin(bike.phi)
+    bike.updateBackWheelPosition(np.array([backWheelX, backWheelY]))
+        
+    frontFrontWheelX = frontWheelX + bike.wheelRadius * cos(bike.phi + bike.frontWheelAngle)
+    frontFrontWheelY = frontWheelY + bike.wheelRadius * sin(bike.phi + bike.frontWheelAngle)
+    bike.updateFrontOfFrontWheelPosition(np.array([frontFrontWheelX, frontFrontWheelY]))
+        
+    backFrontWheelX = frontWheelX - bike.wheelRadius * cos(bike.phi + bike.frontWheelAngle)
+    backFrontWheelY = frontWheelY - bike.wheelRadius * sin(bike.phi + bike.frontWheelAngle)
+    bike.updateBackOfFrontWheelPosition(np.array([backFrontWheelX, backFrontWheelY]))
+    
+def dynamicalMatrix(Cf, Cr, lf, lr, Vx, Iz, m):
+    '''Defines the 2x2 matrix for the dynamical system
+    from [Vehicle Dynamics and Control Springer R. Rajamani]'''
+    topLeft     = (Cf + Cr) / (m * Vx)
+    topRight    = - Vx - (Cf * lf - Cr * lr) / (m * Vx)
+    bottomLeft  = - (lf * Cf - lr * Cr) / (Iz * Vx) 
+    bottomRight = - (lf**2 * Cf + lr**2 * Cr) / (Iz * Vx) 
+    return np.matrix([[topLeft, topRight], [bottomLeft, bottomRight]])
+
+def nonHomogeneousMember(Cf, lf, delta, Iz, m):
+    '''Defines the non-homogeneous member from the set of 
+    differential equations, involving the front wheel steering angle'''
+    return np.array([Cf/m, lf * Cf / Iz]) * delta
+
+def bicycleDynamics(bike, bikes):
+    """Solves for the bicycle dynamics by using the Lateral bicycle model
+    Returns: none
+    """
+    # Solve the system of ODEs for vy and theta (lateral bicycle model)
+    vyDot, thetaDot = systemOfODEsForDynamics(bike)
+    bike.updateOrientationDot(thetaDot)
+    vy, theta       = updateVelocityAndOrientation(bike, vyDot, timeStep)
+        
+    # Update velocity and orientation
+    bike.updateVelocity(np.array([bike.getVelocityX(), vy]))
+    bike.updateOrientation(theta)
+    bike.updateYawDot(theta)
+        
+    # Compute the coordinates of the centre-of-mass in the external frame
+    x, y = rotateCoordinatesToTheExternalFrame(bike, timeStep)
+        
+    # Update
+    bike.updatePosition(np.array([x, y]))
+            
+    # Compute some additional positions
+    computeWheelPositions(bike)
+    
+    # Correct the steering angle towards the destination
+    correctSteeringAngle(bike, bikes)
+    
+def addPlots(bike):
+    """Adds bicycle to plot
+    Returns: none
+    """
+    plt.plot(bike.getPositionX(), bike.getPositionY(), 'bo')
+    plt.plot(bike.getTargetX(), bike.getTargetY(), 'ro')
+    plt.plot([bike.getBackWheelX(), bike.getFrontWheelX()], [bike.getBackWheelY(), bike.getFrontWheelY()], 'b-', lw=2)
+    plt.plot([bike.getFrontOfFrontWheelX(), bike.getBackOfFrontWheelX()], [bike.getFrontOfFrontWheelY(), bike.getBackOfFrontWheelY()], 'r-', lw=1)
+        
+def init():
+       
+    targetDots.set_data([], [])
+    cdmDots.set_data([], [])
+    frame1Dots.set_data([], [])
+    frame2Dots.set_data([], [])
+    frame3Dots.set_data([], [])
+    wheel1Dots.set_data([], [])
+    wheel2Dots.set_data([], [])
+    wheel3Dots.set_data([], [])
+    return cdmDots, frame1Dots, frame2Dots, frame3Dots, wheel1Dots, wheel2Dots, wheel3Dots
+   
+def animate(frames):
+   
+    t = time[frames]
+    
+    bicycleDynamics(bike1, [bike2, bike3])
+    bicycleDynamics(bike2, [bike1, bike3])
+    bicycleDynamics(bike3, [bike1, bike2])
+        
+    bikes = [bike1, bike2, bike3]
+
+    targetDots.set_data([bike1.getTargetX(), bike2.getTargetX(), bike3.getTargetX()], 
+                        [bike1.getTargetY(), bike2.getTargetY(), bike3.getTargetY()])
+    cdmDots.set_data([bike1.getPositionX(), bike2.getPositionX(), bike3.getPositionX()], 
+                     [bike1.getPositionY(), bike2.getPositionY(), bike3.getPositionY()])
+      
+    backWheel1X = [bike1.getBackWheelX(), bike1.getFrontWheelX()]
+    backWheel1Y = [bike1.getBackWheelY(), bike1.getFrontWheelY()]
+    
+    frame1Dots.set_data(backWheel1X, backWheel1Y)
+    
+    backWheel2X = [bike2.getBackWheelX(), bike2.getFrontWheelX()]
+    backWheel2Y = [bike2.getBackWheelY(), bike2.getFrontWheelY()]
+    
+    frame2Dots.set_data(backWheel2X, backWheel2Y)
+    
+    backWheel3X = [bike3.getBackWheelX(), bike3.getFrontWheelX()]
+    backWheel3Y = [bike3.getBackWheelY(), bike3.getFrontWheelY()]
+    
+    frame3Dots.set_data(backWheel3X, backWheel3Y)
+      
+    frontBackFrontWheel1X = [bike1.getFrontOfFrontWheelX(), bike1.getBackOfFrontWheelX()] 
+    frontBackFrontWheel1Y = [bike1.getFrontOfFrontWheelY(), bike1.getBackOfFrontWheelY()] 
+
+    wheel1Dots.set_data(frontBackFrontWheel1X, frontBackFrontWheel1Y)
+    
+    frontBackFrontWheel2X = [bike2.getFrontOfFrontWheelX(), bike2.getBackOfFrontWheelX()] 
+    frontBackFrontWheel2Y = [bike2.getFrontOfFrontWheelY(), bike2.getBackOfFrontWheelY()] 
+
+    wheel2Dots.set_data(frontBackFrontWheel2X, frontBackFrontWheel2Y)
+    
+    frontBackFrontWheel3X = [bike3.getFrontOfFrontWheelX(), bike3.getBackOfFrontWheelX()] 
+    frontBackFrontWheel3Y = [bike3.getFrontOfFrontWheelY(), bike3.getBackOfFrontWheelY()] 
+
+    wheel3Dots.set_data(frontBackFrontWheel3X, frontBackFrontWheel3Y)
+    
+    return cdmDots, frame1Dots, frame2Dots, frame3Dots, wheel1Dots, wheel2Dots, wheel3Dots
+
+if __name__ == '__main__':
+      
+    plt.ion()
+    
+    #Initial instances
+    bike1 = bicycle()
+    bike2 = bicycle()
+    bike3 = bicycle()
+    #Initial positions
+    bike2.updatePosition(np.array([-10., -10.]))
+    bike2.updateTarget(np.array([10., 10.]))
+    bike3.updatePosition(np.array([0., -13.]))
+    bike3.updateTarget(np.array([0., 10.]))
+    timeStep = 0.5
+    
+    t = - timeStep
+    
+#     time = np.linspace(0., 1000., 2000)
+#     figure       = plt.figure()
+#     axes         = plt.axes(xlim=(-20, 20), ylim=(-20, 20)) 
+#     targetDots,  = axes.plot([], [], 'ro')
+#     cdmDots,     = axes.plot([], [], 'bo')
+#     frame1Dots,  = axes.plot([], [], 'b-', lw=2)
+#     frame2Dots,  = axes.plot([], [], 'b-', lw=2)
+#     frame3Dots,  = axes.plot([], [], 'b-', lw=2)
+#     wheel1Dots,  = axes.plot([], [], 'r-', lw=1)
+#     wheel2Dots,  = axes.plot([], [], 'r-', lw=1)
+#     wheel3Dots,  = axes.plot([], [], 'r-', lw=1)
+#     anim=animation.FuncAnimation(figure, animate, init_func=init, frames=1000, interval=20, blit=True)
+#     anim.save('lateral_bicycle_model_scaled.mp4', bitrate=-1)
+#     print 'video recorded.'
+#     sys.exit()
+         
+    for i in range(1000):
+        plt.cla()      
+        plt.xlim([-20., 20.])
+        plt.ylim([-20., 20.]) 
+        
+        t = t + timeStep
+        
+        bicycleDynamics(bike1, [bike2, bike3])
+        bicycleDynamics(bike2, [bike1, bike3])
+        bicycleDynamics(bike3, [bike1, bike2])
+        
+        addPlots(bike1)
+        addPlots(bike2)
+        addPlots(bike3)
+
+        plt.show()
+        plt.draw()
+        plt.pause(0.001)
+        
