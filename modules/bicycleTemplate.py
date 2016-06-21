@@ -3,6 +3,8 @@
 from math import *
 import numpy as np
 
+from modules import controllers
+
 class bicycle:
     def __init__(self):
         # Bicycle constants
@@ -19,19 +21,26 @@ class bicycle:
         self.frontWheelForceInY = 1.
         
         # Variables
-        self.phiDot             = 0.
-        self.phi                = 0.
-        self.thetaDot           = 0.
-        self.theta              = 0.
-        self.position           = np.array([10., -10.])
-        self.velocity           = np.array([sqrt(2.)/2., sqrt(2.)/2.])
-        self.target             = np.array([-10., 10.])
+        self.psiDotDot          = 0.
+        self.psiDot             = 0.
+        self.psi                = 0.
+        self.position           = np.array([-10., 5.])
+        self.velocity           = np.array([0.5, 0.])
+        self.desiredVelocity    = 2.5
+        self.target             = np.array([20., 20.])
         self.frontWheelAngle    = np.pi/10. #[rads]
         self.frontWheelPosition  = np.array([0., 0.])
         self.backWheelPosition   = np.array([0., 0.]) 
         self.frontOfFrontWheelPosition  = np.array([0., 0.])
         self.backOfFrontWheelPosition   = np.array([0., 0.]) 
         
+        # Controller variables 
+        self.set_of_controllers = {"PID": "PID", "HMC": "HMC"}
+        
+        
+    def preferred_controller(self, controller):
+        return self.set_of_controlers[controller]
+            
     def updateFrontOfFrontWheelPosition(self, newPosition):
         self.frontOfFrontWheelPosition = newPosition    
     
@@ -78,16 +87,13 @@ class bicycle:
         self.target = newTarget
         
     def updateYaw(self, newYaw):
-        self.phi = newYaw
+        self.psi = newYaw
         
     def updateYawDot(self, newYawDot):
-        self.phiDot = newYawDot
+        self.psiDot = newYawDot
                
-    def updateOrientation(self, newOrientation):
-        self.theta = newOrientation
-        
-    def updateOrientationDot(self, newOrientationDot):
-        self.thetaDot = newOrientationDot    
+    def updateYawDotDot(self, newYawDotDot):
+        self.psiDotDot = newYawDotDot
     
     def getVelocityX(self):
         return self.velocity[0]
@@ -96,7 +102,7 @@ class bicycle:
         return self.velocity[1]
         
     def updateVelocity(self, newVelocity):
-        self.velocity           = newVelocity
+        self.velocity = newVelocity
            
     def getPositionX(self):
         return self.position[0]
@@ -105,7 +111,7 @@ class bicycle:
         return self.position[1]
         
     def updatePosition(self, newPosition):
-        self.position           = newPosition 
+        self.position = newPosition 
         
     def updateFrontWheelAngle(self, newFrontWheelAngle):
-        self.frontWheelAngle    = newFrontWheelAngle
+        self.frontWheelAngle = newFrontWheelAngle
