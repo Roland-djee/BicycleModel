@@ -5,8 +5,7 @@ Created on 22 Jun 2016
 '''
 import unittest
 
-from src.bicycle_kinematics import *
-
+#from src.bicycle_kinematics import *
 
 class Test(unittest.TestCase):
 
@@ -20,8 +19,9 @@ class Test(unittest.TestCase):
 
 
     def testKinematics(self):
-        main()
         
+        #main()
+        print "wtf"
         pass
 
 
