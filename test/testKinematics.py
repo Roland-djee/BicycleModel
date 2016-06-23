@@ -4,8 +4,10 @@ Created on 22 Jun 2016
 @author: RolandGuichard
 '''
 import unittest
+from modules.auxiliaryLib import *
+from modules.bicycleTemplate import *
 
-#from src.bicycle_kinematics import *
+from src.bicycleKinematics import *
 
 class Test(unittest.TestCase):
 
@@ -19,8 +21,11 @@ class Test(unittest.TestCase):
 
 
     def testKinematics(self):
-        
-        #main()
+#         sourcecode.b
+#         normalisedDesiredDirection()
+#         main()
+#         main()
+#         differentialYaw()
         print "wtf"
         pass
 
