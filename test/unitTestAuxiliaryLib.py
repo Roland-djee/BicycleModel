@@ -6,9 +6,11 @@ Created on 30 Mar 2016
 import unittest
 
 import numpy as np
+# import sys
+# sys.path.append('../src/')
+# import bicycleKinematics
 
-#from src.bicycle import *
-
+# from src.bicycleDynamics import *
 #from modules.mathlib import *
 
 from modules.auxiliaryLib import *
